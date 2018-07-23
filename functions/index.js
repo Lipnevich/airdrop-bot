@@ -20,7 +20,7 @@ exports.hook = functions.https.onRequest((request, response) => {
     console.log('Request body: ' + JSON.stringify(request.body));
 
     let message = request.body.message;
-    if (message && message.chat && message.entities && message.entities[0] && message.entities[0].type == 'bot_command') {
+    if (message && !message.is_bot && message.chat && message.entities && message.entities[0] && message.entities[0].type == 'bot_command') {
         if (message.chat.type == "private") {
             return bot.sendMessage(message.chat.id, 'Hey-ho! Please add me to your group in order to start!')
         }
@@ -44,13 +44,13 @@ function processOwner(message) {
         case '/help' :
         case '/start@AirDropSmartRewarderBot' :
         case '/help@AirDropSmartRewarderBot' :
-            bot.sendMessage(message.chat.id, `Hey-ho, ${message.from.first_name}! I will send reward to each new member in this ${message.chat.type} ${message.chat.title}. There is a fixed fee per each reward in ${rewardAmount} WAVES. In order to start please set reward with command: /reward AMOUNT TOKEN_NAME`); break;
+            return bot.sendMessage(message.chat.id, `Hey-ho, ${message.from.first_name}! I will send reward to each new member in this ${message.chat.type} ${message.chat.title}. There is a fixed fee per each reward in ${rewardAmount} WAVES. In order to start please set reward with command: /reward AMOUNT TOKEN_NAME`);
         case '/reward' :
         case '/reward@AirDropSmartRewarderBot' :
-            setupReward(message); break;
-        case '/withdraw'
+            return setupReward(message);
+        case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
-            withdraw(message); break;
+            return withdraw(message);
     }
 }
 
@@ -61,13 +61,12 @@ function processMember(message) {
         case '/help' :
         case '/start@AirDropSmartRewarderBot' :
         case '/help@AirDropSmartRewarderBot' :
-            bot.sendMessage(message.chat.id, `Hey-ho, dear ${message.from.first_name}! You may get your reward for joining this ${message.chat.type} ${message.chat.title} with command /withdraw ADDRESS`);
+            return bot.sendMessage(message.chat.id, `Hey-ho, dear ${message.from.first_name}! You may get your reward for joining this ${message.chat.type} ${message.chat.title} with command /withdraw ADDRESS`);
         case '/reward' :
         case '/reward@AirDropSmartRewarderBot' :
         case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
-            rewardMember(message);
-            break;
+            return rewardMember(message);
     }
 }
 
@@ -101,7 +100,7 @@ function rewardMember(message) {
             const transferData = {
                 recipient: address,
                 assetId: chat.token,
-                amount: amount,
+                amount: chat.amount,
                 feeAssetId: 'WAVES',
                 fee: fee,
                 attachment: '',
@@ -140,6 +139,9 @@ function withdraw(message) {
     admin.database().ref('chats').child('' + message.chat.id).once('value').then(snapshot => {
         console.log(JSON.stringify(snapshot));
         let chat = snapshot.val();
+        if(!chat) {
+            return bot.sendMessage(message.chat.id, `Dear ${message.from.first_name}, nothing to withdraw, please set up reward first`);
+        }
 
         let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
         Waves.API.Node.addresses.balanceDetails(wallet.address).then(balanceDetails => {
@@ -159,13 +161,9 @@ function setupReward(message) {
         return bot.sendMessage(message.chat.id, `Dear ${message.from.first_name}, please check your command. Seems like amount that your entered is not a number. For example correct numbers are 1500, 200.3, 0.04`);
     }
     let token = words[2];
-    if(!Number.isNaN(token)) {
-        return bot.sendMessage(message.chat.id, `Dear ${message.from.first_name}, please check your command. Seems like token name that your entered is a number. For example WAVES, 9PVyxDPUjauYafvq83JTXvHQ8nPnxwKA7siUFcqthCDJ, BTC`);
-    }
 
     let ref = admin.database().ref('chats').child('' + message.chat.id);
     ref.once('value').then(snapshot => {
-        console.log(JSON.stringify(snapshot));
         let chat = snapshot.val();
         if(!chat) {
             chat = { seed : Waves.Seed.create().encrypt(salt) };
@@ -173,6 +171,7 @@ function setupReward(message) {
 
         chat.amount = amount;
         chat.token = token;
+        console.log(JSON.stringify(chat));
         ref.set(chat);
 
         let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));

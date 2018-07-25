@@ -7,13 +7,13 @@ const botToken = functions.config().bot.token;
 const botWebhook = functions.config().bot.hook;
 const bot = new TelegramBot(botToken, {webHook: { port: 443 }, polling: false});
 
-const WavesAPI = require('@waves/waves-api');
+const WavesAPI = require('waves-api');
 const addressForRewards = functions.config().wallet.address;
 const salt = functions.config().wallet.salt;
-const decimals = 10000000;
-const fee = 0.01 * decimals;
+const decimals = 100000000;
+const fee = 0.001 * decimals;
 const rewardAmount = 0.01;
-const VERSION = '0.13';
+const VERSION = '1.0';
 const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
 exports.hook = functions.https.onRequest((request, response) => {
@@ -35,7 +35,7 @@ function botSay(process, messageToUser) {
         messageToUser = intro + ', ' + messageToUser;
         console.log(messageToUser);
     } else {
-        messageToUser = intro + ', internal bot error happens. Please contact @Lipnevich for solving it';
+        messageToUser = intro + ', internal bot error happens. Please contact @NoBadBro for solving it';
     }
     bot.sendMessage(process.message.chat.id, messageToUser);
     process.response.status(201).send(VERSION);
@@ -130,8 +130,8 @@ function rewardMember(process) {
         }
 
         let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-        Waves.API.Node.addresses.balanceDetails(wallet.address).then(balanceDetails => {
-            if(balanceDetails.available < (rewardAmount * decimals)) {
+        Waves.API.Node.v1.addresses.balance(wallet.address).then(balanceDetails => {
+            if(balanceDetails.balance < (rewardAmount * decimals)) {
                 console.log('Low balance for reward');
                 return botSay(process, 'there is not enough money for reward. Please contact this group owner for details');
             }
@@ -146,7 +146,7 @@ function rewardMember(process) {
                 timestamp: Date.now()
             };
 
-            Waves.API.Node.transactions.broadcast('transfer', rewardData, wallet.keyPair).then(response => {
+            Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair).then(response => {
                 console.log('Reward have been sent', rewardData);
 
                 ref.child('members').child(memberId).set(address);
@@ -161,7 +161,7 @@ function rewardMember(process) {
                                 timestamp: Date.now()
                 };
                 let messageToUser = 'reward ' + chat.amount + ' ' + chat.token + ' was sent to address ' + address;
-                Waves.API.Node.transactions.broadcast('transfer', botFeeData, wallet.keyPair).then(response => {
+                Waves.API.Node.v1.assets.transfer(botFeeData, wallet.keyPair).then(response => {
                     console.log('Bot fee have been sent', botFeeData);
                     return botSay(process, messageToUser);
                 }).catch(error => {
@@ -228,6 +228,7 @@ function withdraw(process) {
         }
 
         let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
+
         const withdrawData = {
             recipient: address,
             assetId: token,
@@ -237,8 +238,9 @@ function withdraw(process) {
             attachment: '',
             timestamp: Date.now()
         };
-        let messageToUser = 'withdraw ' + chat.amount + ' ' + chat.token + ' was sent to address ' + address;
-        Waves.API.Node.transactions.broadcast('transfer', withdrawData, wallet.keyPair).then(response => {
+        let messageToUser = 'withdraw ' + amount + ' ' + chat.token + ' was sent to address ' + address;
+
+        Waves.API.Node.v1.assets.transfer(withdrawData, wallet.keyPair).then(response => {
             console.log('Withdraw processed', withdrawData);
             return botSay(process, messageToUser);
         }).catch(error => {

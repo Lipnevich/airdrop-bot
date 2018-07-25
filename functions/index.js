@@ -14,7 +14,7 @@ const decimals = 10000000;
 const fee = 0.01 * decimals;
 const rewardAmount = 0.01;
 const VERSION = '0.13';
-const Waves = WavesAPI.create(WavesAPI.TESTNET_CONFIG);
+const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
 exports.hook = functions.https.onRequest((request, response) => {
     console.log('Request body: ' + JSON.stringify(request.body));

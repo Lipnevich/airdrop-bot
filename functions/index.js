@@ -13,7 +13,7 @@ const salt = functions.config().wallet.salt;
 const decimals = 100000000;
 const fee = 0.001 * decimals;
 const rewardAmount = 0.01;
-const VERSION = '1.0';
+const VERSION = '1.3';
 const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
 exports.hook = functions.https.onRequest((request, response) => {
@@ -24,7 +24,7 @@ exports.hook = functions.https.onRequest((request, response) => {
     try {
         startBot(process);
     } catch(error) {
-        console.log(error);
+        console.error(error);
         botSay(process);
     }
 });
@@ -37,8 +37,18 @@ function botSay(process, messageToUser) {
     } else {
         messageToUser = intro + ', internal bot error happens. Please contact @NoBadBro for solving it';
     }
-    bot.sendMessage(process.message.chat.id, messageToUser);
-    process.response.status(201).send(VERSION);
+    bot.sendMessage(process.message.chat.id, messageToUser).then(botMessage => {
+        let oldMessagesRef = admin.database().ref('oldMessages').child(process.message.chat.id);
+        let currentMillis = new Date().getTime();
+
+        oldMessagesRef.child(process.message.message_id).set(currentMillis);
+        oldMessagesRef.child(botMessage.message_id).set(currentMillis);
+
+        process.response.status(201).send(VERSION);
+    }).catch(error => {
+        console.warn('fail to persist messages', error);
+        process.response.status(201).send(VERSION);
+    });
 }
 
 function shouldProcess(message) {
@@ -57,6 +67,29 @@ function startBot(process) {
         console.log('Private chat message', process.message.text);
         return botSay(process, 'please add me to your group in order to start');
     }
+
+    let oldMessagesRef = admin.database().ref('oldMessages').child(process.message.chat.id);
+    let currentMillis = new Date().getTime();
+
+    oldMessagesRef.once('value').then(snapshot => {
+        snapshot.forEach(childSnapshot => {
+            let oldMessageId = childSnapshot.key;
+            let oldMessageTime = childSnapshot.val();
+            console.log('Old message was found ' + oldMessageId + ' with time '
+                + oldMessageTime + ', current time ' + currentMillis);
+
+            if(currentMillis - (60 * 000) > oldMessageTime){
+                bot.deleteMessage(process.message.chat.id, oldMessageId).then(deleted => {
+                    console.log('message deleted');
+                    oldMessagesRef.child(oldMessageId).remove();
+                }).catch(error => {
+                    console.warn('fail to delete messages', error);
+                });
+            }
+        });
+    }).catch(error => {
+        console.error('Error during deleting old messages', error);
+    });
 
     bot.getChatMember(process.message.chat.id, process.message.from.id).then(member => {
         if(member.status == "creator") {
@@ -84,7 +117,7 @@ function processAdmin(process) {
         case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
             return withdraw(process);
-        default : return botSay(process);
+        default : return botSay(process, 'please check your command');
     }
 }
 
@@ -101,7 +134,7 @@ function processMember(process) {
         case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
             return rewardMember(process);
-        default : return botSay(process);
+        default : return botSay(process, 'please check your command');
     }
 }
 
@@ -170,7 +203,7 @@ function rewardMember(process) {
                 });
             }).catch(error => {
                 console.error('Error during reward sending', error);
-                return botSay(process, 'Waves blockchain error happens');
+                return botSay(process, "error during reward sending please check your command");
             });
         });
     });

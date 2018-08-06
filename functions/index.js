@@ -79,9 +79,9 @@ function startBot(process) {
                 + oldMessageTime + ', current time ' + currentMillis);
 
             if(currentMillis - (60 * 000) > oldMessageTime){
+                oldMessagesRef.child(oldMessageId).remove();
                 bot.deleteMessage(process.message.chat.id, oldMessageId).then(deleted => {
                     console.log('message deleted');
-                    oldMessagesRef.child(oldMessageId).remove();
                 }).catch(error => {
                     console.warn('fail to delete messages', error);
                 });

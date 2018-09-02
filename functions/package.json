@@ -1,9 +1,12 @@
 {
   "name": "AirDropSmartRewarderBot",
   "description": "Cloud Functions for AirDropSmartRewarderBot",
+  "engines": {
+    "node": "8"
+  },
   "dependencies": {
-    "firebase-admin": "latest",
-    "firebase-functions": "latest",
+    "firebase-admin": "^6.0.0",
+    "firebase-functions": "^2.0.5",
     "node-telegram-bot-api": "latest",
     "waves-api": "^0.24.2"
   },

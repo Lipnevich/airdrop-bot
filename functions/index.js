@@ -13,7 +13,6 @@ const salt = functions.config().wallet.salt;
 const decimals = 100000000;
 const fee = 0.001 * decimals;
 const rewardAmount = 0.01;
-const days = 1000 * 60 * 60 * 24;
 const VERSION = '1.3';
 const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
@@ -158,66 +157,53 @@ function rewardMember(process) {
         }
         let memberId = '' + process.message.from.id;
         if(chat.members[memberId]) {
-            let previousRewardDay = Math.round(chat.members[memberId] / days);
-            let currentDay = Math.round(Date.now() / days);
-
-            if(currentDay <= previousRewardDay) {
-                console.log('Member was rewarded already');
-                return botSay(process, 'reward ' + chat.amount + ' ' + chat.token
-                    + ' was already sent today');
-            }
+            console.log('Member was rewarded already');
+            return botSay(process, 'reward ' + chat.amount + ' ' + chat.token
+                + ' was already sent to address ' + chat.members[memberId]);
         }
 
-        Waves.API.Node.v1.assets.balance(address, chat.token).then(details => {
-            let existingTokens = details.balance;
-            if(existingTokens < 1000000) {
-                console.log('Member has less than 1 000 000 tokens');
-                return botSay(process, 'there is only ' + existingTokens + ' on your wallet, reward will not be send');
+        let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
+        Waves.API.Node.v1.addresses.balance(wallet.address).then(balanceDetails => {
+            if(balanceDetails.balance < (rewardAmount * decimals)) {
+                console.log('Low balance for reward');
+                return botSay(process, 'there is not enough money for reward. Please contact this group owner for details');
             }
 
-            let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-            Waves.API.Node.v1.addresses.balance(wallet.address).then(balanceDetails => {
-                if(balanceDetails.balance < (rewardAmount)) {
-                    console.log('Low balance for reward');
-                    return botSay(process, 'there is not enough money for reward. Please contact this group owner for details');
-                }
+            const rewardData = {
+                recipient: address,
+                assetId: chat.token,
+                amount: chat.amount * decimals,
+                feeAssetId: 'WAVES',
+                fee: fee,
+                attachment: '',
+                timestamp: Date.now()
+            };
 
-                const rewardData = {
-                    recipient: address,
-                    assetId: chat.token,
-                    amount: chat.amount,
-                    feeAssetId: 'WAVES',
-                    fee: fee,
-                    attachment: '',
-                    timestamp: Date.now()
+            Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair).then(response => {
+                console.log('Reward have been sent', rewardData);
+
+                ref.child('members').child(memberId).set(address);
+
+                const botFeeData = {
+                                recipient: addressForRewards,
+                                assetId: 'WAVES',
+                                amount: ((rewardAmount * decimals) - (fee * 2)),
+                                feeAssetId: 'WAVES',
+                                fee: fee,
+                                attachment: '',
+                                timestamp: Date.now()
                 };
-
-                Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair).then(response => {
-                    console.log('Reward have been sent', rewardData);
-
-                    ref.child('members').child(memberId).set(Date.now());
-
-                    const botFeeData = {
-                                    recipient: addressForRewards,
-                                    assetId: 'WAVES',
-                                    amount: ((rewardAmount * decimals) - (fee * 2)),
-                                    feeAssetId: 'WAVES',
-                                    fee: fee,
-                                    attachment: '',
-                                    timestamp: Date.now()
-                    };
-                    let messageToUser = 'reward ' + chat.amount + ' ' + chat.token + ' was sent to address ' + address;
-                    Waves.API.Node.v1.assets.transfer(botFeeData, wallet.keyPair).then(response => {
-                        console.log('Bot fee have been sent', botFeeData);
-                        return botSay(process, messageToUser);
-                    }).catch(error => {
-                        console.error('Error during bot fee sending', error);
-                        return botSay(process, messageToUser);
-                    });
+                let messageToUser = 'reward ' + chat.amount + ' ' + chat.token + ' was sent to address ' + address;
+                Waves.API.Node.v1.assets.transfer(botFeeData, wallet.keyPair).then(response => {
+                    console.log('Bot fee have been sent', botFeeData);
+                    return botSay(process, messageToUser);
                 }).catch(error => {
-                    console.error('Error during reward sending', error);
-                    return botSay(process, "error during reward sending please check your command");
+                    console.error('Error during bot fee sending', error);
+                    return botSay(process, messageToUser);
                 });
+            }).catch(error => {
+                console.error('Error during reward sending', error);
+                return botSay(process, "error during reward sending please check your command");
             });
         });
     });
@@ -301,25 +287,5 @@ exports.setWebhook = functions.https.onRequest((request, response) => {
     bot.setWebHook(botWebhook + '/bot' + botToken);
     response.status(201).send('Webhook was added! ' + version);
 });
-
-exports.addressY = functions.https.onRequest((request, response) => {
-    let chats = admin.database().ref('chats').child('-1001220299550').once('value').then(snapshot => {
-            let chatId = snapshot.key;
-            let chat = snapshot.val();
-            let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-            response.status(201).send(JSON.stringify(wallet) + "<br/>" + VERSION);
-    });
-});
-
-exports.wavesWorld = functions.https.onRequest((request, response) => {
-    let chats = admin.database().ref('chats').child('-1001220299550').once('value').then(snapshot => {
-            let chatId = snapshot.key;
-            let chat = snapshot.val();
-            let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-            response.status(201).send(JSON.stringify(wallet) + "<br/>" + VERSION);
-    });
-});
-
-
 
 

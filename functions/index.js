@@ -1,54 +1,48 @@
+'use strict';
+
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 admin.initializeApp();
 
 const TelegramBot = require('node-telegram-bot-api');
-const botToken = functions.config().bot.token;
-const botWebhook = functions.config().bot.hook;
-const bot = new TelegramBot(botToken, {webHook: { port: 443 }, polling: false});
+const BOT_TOKEN = functions.config().bot.token;
+const BOT_WEBHOOK = functions.config().bot.hook;
+const bot = new TelegramBot(BOT_TOKEN, {webHook: { port: 443 }, polling: false});
 
-const WavesAPI = require('waves-api');
-const addressForRewards = functions.config().wallet.address;
-const salt = functions.config().wallet.salt;
-const decimals = 100000000;
-const fee = 0.001 * decimals;
-const rewardAmount = 0.01;
-const VERSION = '1.3';
+const WavesAPI = require('@waves/waves-api');
+const ADDRESS_FOR_REWARDS = functions.config().wallet.address;
+const SALT = functions.config().wallet.salt;
+const DECIMALS = 8;
+const FEE = 0.001 * (10^DECIMALS);
+const REWARD_AMOUNT = 0.01;
+const VERSION = ' | Bot version 1.7';
+
 const Waves = WavesAPI.create(WavesAPI.MAINNET_CONFIG);
 
-exports.hook = functions.https.onRequest((request, response) => {
-    console.log('Request body: ' + JSON.stringify(request.body));
-
-    let process = { message : request.body.message, response : response };
+exports.hook = functions.https.onRequest(async (request, response) => {
+    console.log('Request: ' + JSON.stringify(request.body));
+    let command = request.body.message;
 
     try {
-        startBot(process);
+        await startBot(command);
     } catch(error) {
         console.error(error);
-        botSay(process);
+        await botSay(command, 'internal bot error happens. Please contact @Lipnevich for solving it', true);
     }
+
+    response.status(201).send(VERSION);
 });
 
-function botSay(process, messageToUser) {
-    let intro = 'Dear ' + process.message.from.first_name;
-    if(messageToUser) {
-        messageToUser = intro + ', ' + messageToUser;
-        console.log(messageToUser);
-    } else {
-        messageToUser = intro + ', internal bot error happens. Please contact @NoBadBro for solving it';
+async function botSay(command, answer, doNotPersist) {
+    answer = 'Dear ' + command.from.first_name + ', ' + answer + VERSION;
+    console.log(answer);
+    let answerId = (await bot.sendMessage(command.chat.id, answer)).message_id;
+
+    if(!doNotPersist) {
+        let messagesRef = admin.database().ref('messages').child(command.chat.id);
+        messagesRef.child(command.message_id).set(new Date().getTime());
+        messagesRef.child(answerId).set(new Date().getTime());
     }
-    bot.sendMessage(process.message.chat.id, messageToUser).then(botMessage => {
-        let oldMessagesRef = admin.database().ref('oldMessages').child(process.message.chat.id);
-        let currentMillis = new Date().getTime();
-
-        oldMessagesRef.child(process.message.message_id).set(currentMillis);
-        oldMessagesRef.child(botMessage.message_id).set(currentMillis);
-
-        process.response.status(201).send(VERSION);
-    }).catch(error => {
-        console.warn('fail to persist messages', error);
-        process.response.status(201).send(VERSION);
-    });
 }
 
 function shouldProcess(message) {
@@ -57,235 +51,237 @@ function shouldProcess(message) {
         && message.entities[0].type == 'bot_command';
 }
 
-function startBot(process) {
-    if(!shouldProcess(process.message)) {
-        console.log('Ignore message');
-        return process.response.status(201).send(VERSION);
+async function startBot(command) {
+    removeOutdatedChatMessages(command);
+
+    if(!shouldProcess(command)) {
+        console.log('Ignore');
+        return;
     }
 
-    if (process.message.chat.type == "private") {
-        console.log('Private chat message', process.message.text);
-        return botSay(process, 'please add me to your group in order to start');
+    if (command.chat.type == "private") {
+        console.log('Private chat command', command.text);
+        return await botSay(command, 'please add me to your group in order to start', true);
     }
 
-    let oldMessagesRef = admin.database().ref('oldMessages').child(process.message.chat.id);
-    let currentMillis = new Date().getTime();
+    let isAdmin = (await bot.getChatMember(command.chat.id, command.from.id)).status == "creator";
+    if(isAdmin) {
+        await processAdmin(command);
+    } else {
+        await processMember(command);
+    }
+}
 
-    oldMessagesRef.once('value').then(snapshot => {
-        snapshot.forEach(childSnapshot => {
-            let oldMessageId = childSnapshot.key;
-            let oldMessageTime = childSnapshot.val();
+async function removeOutdatedChatMessages(command) {
+    let messagesRef = admin.database().ref('messages').child(command.chat.id);
+    messagesRef.once('value').then(messages => {
+        messages.forEach(message => {
+            let oldMessageId = message.key;
+            let oldMessageTime = message.val();
             console.log('Old message was found ' + oldMessageId + ' with time '
-                + oldMessageTime + ', current time ' + currentMillis);
+                + oldMessageTime + ', current time ' + Date.now());
 
-            if(currentMillis - (60 * 000) > oldMessageTime){
-                oldMessagesRef.child(oldMessageId).remove();
-                bot.deleteMessage(process.message.chat.id, oldMessageId).then(deleted => {
-                    console.log('message deleted');
+            if(Date.now() > oldMessageTime + 30000){
+                messagesRef.child(oldMessageId).remove();
+                bot.deleteMessage(command.chat.id, oldMessageId).then(deleted => {
+                    console.log('Chat message deleted');
                 }).catch(error => {
-                    console.warn('fail to delete messages', error);
+                    console.warn('Fail to delete chat message', error);
                 });
             }
         });
     }).catch(error => {
-        console.error('Error during deleting old messages', error);
-    });
-
-    bot.getChatMember(process.message.chat.id, process.message.from.id).then(member => {
-        if(member.status == "creator") {
-            processAdmin(process);
-        } else {
-            processMember(process);
-        }
+        console.error('Error during deleting outdated chat messages', error);
     });
 }
 
-function processAdmin(process) {
-    let words = process.message.text.split(' ');
+async function processAdmin(command) {
+    let words = command.text.split(' ');
     switch(words[0]) {
         case '/start' :
         case '/help' :
         case '/start@AirDropSmartRewarderBot' :
         case '/help@AirDropSmartRewarderBot' :
-            return botSay(process, 'I will send reward to each new member in this group '
-                + process.message.chat.title + '. There is a fixed fee per each reward in '
-                + rewardAmount + ' WAVES. In order to start please set reward with command: '
-                + '/reward AMOUNT TOKEN_NAME');
+            return await botSay(command, 'I will send reward to each new member in this group '
+                + command.chat.title + '. There is a fixed fee per each reward in '
+                + REWARD_AMOUNT + ' WAVES. In order to start please set reward with command: '
+                + '/reward AMOUNT TOKEN_ID');
         case '/reward' :
         case '/reward@AirDropSmartRewarderBot' :
-            return setupReward(process);
+            return await setupReward(command);
         case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
-            return withdraw(process);
-        default : return botSay(process, 'please check your command');
+            return await withdraw(command);
+        default :
+            return await botSay(command, 'please check your command');
     }
 }
 
-function processMember(process) {
-    let words = process.message.text.split(' ');
+async function setupReward(command) {
+    let words = command.text.split(' ');
+    if(words.length != 3) {
+        console.log('Incorrect setup reward', words);
+        return await botSay(command, 'please check your command. For example for rewarding each new member with 5.5 Noxbox tokens type: /reward 5.5 9PVyxDPUjauYafvq83JTXvHQ8nPnxwKA7siUFcqthCDJ');
+    }
+    let amount = words[1];
+    if(Number.isNaN(amount)) {
+        console.log('Incorrect amount in setup reward', words);
+        return await botSay(command, 'please check your command. Seems like amount that your entered is not a number. For example correct numbers are 1500, 200.3, 0.04');
+    }
+    let tokenId = words[2];
+
+    let chatRef = admin.database().ref('chats').child('' + command.chat.id);
+    let chat = (await chatRef.once('value')).val();
+    if(!chat) {
+        chat = { seed : Waves.Seed.create().encrypt(SALT) };
+    }
+
+    if(tokenId.toLowerCase() == 'waves') {
+        chat.decimals = 8;
+        chat.name = tokenId;
+        chat.token = tokenId.toUpperCase();
+    } else {
+        let token = await Waves.API.Node.transactions.get(tokenId);
+        chat.decimals = token.decimals;
+        chat.name = token.name;
+        chat.token = tokenId;
+    }
+    chat.amount = amount;
+
+    chatRef.set(chat);
+    console.log('Chat settings persisted. ', JSON.stringify(chat));
+
+    let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, SALT));
+    return await botSay(command, 'reward was successfully set! I will be able to start rewarding process as soon as you send at least ' + amount + ' ' + token.name + ' and ' + REWARD_AMOUNT + ' WAVES to ' + wallet.address + '. You will be able to withdraw all your funds any time you want with command /withdraw AMOUNT TOKEN_ID TO_ADDRESS');
+}
+
+async function withdraw(command) {
+    let words = command.text.split(' ');
+    if(words.length != 4) {
+        console.log('Incorrect withdraw command', words);
+        return await botSay(command, 'please check your command. For example for withdrawing 5.5 Noxbox tokens type: /withdraw 5.5 9PVyxDPUjauYafvq83JTXvHQ8nPnxwKA7siUFcqthCDJ TO_ADDRESS');
+    }
+    let amount = words[1];
+    if(Number.isNaN(amount)) {
+        console.log('Incorrect amount in setup reward', words);
+        return await botSay(command, 'please check your command. Seems like amount that your entered is not a number. For example correct numbers are 1500, 200.3, 0.04');
+    }
+    let tokenId = words[2];
+    let address = words[3];
+    let chat = (await admin.database().ref('chats').child('' + command.chat.id).once('value')).val();
+    console.log(JSON.stringify(chat));
+    if(!chat) {
+        console.log('Attempt to withdraw without setup reward');
+        return await botSay(command, 'nothing to withdraw, please set up reward first');
+    }
+
+    let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, SALT));
+    const withdrawData = {
+        recipient: address,
+        assetId: tokenId,
+        amount: amount * (10^chat.decimals),
+        feeAssetId: 'WAVES',
+        fee: FEE,
+        attachment: '',
+        timestamp: Date.now()
+    };
+
+    try {
+        await Waves.API.Node.v1.assets.transfer(withdrawData, wallet.keyPair);
+        console.log('Withdraw processed', withdrawData);
+        return await botSay(command, 'withdraw ' + amount + ' ' + chat.name + ' was sent to address ' + address);
+    } catch (error) {
+        console.log(error);
+        return await botSay(command, 'Error during withdraw, please check your balance on ' + wallet.address);
+    }
+}
+
+async function processMember(command) {
+    let words = command.text.split(' ');
     switch(words[0]) {
         case '/start' :
         case '/help' :
         case '/start@AirDropSmartRewarderBot' :
         case '/help@AirDropSmartRewarderBot' :
-            return botSay(process, 'you may get your reward for joining this group with command /withdraw ADDRESS');
+            return await botSay(command, 'you may get your reward for joining this group with command /withdraw ADDRESS');
         case '/reward' :
         case '/reward@AirDropSmartRewarderBot' :
         case '/withdraw' :
         case '/withdraw@AirDropSmartRewarderBot' :
-            return rewardMember(process);
-        default : return botSay(process, 'please check your command');
+            return await rewardMember(command);
+        default :
+            return await botSay(command, 'please check your command');
     }
 }
 
-function rewardMember(process) {
-    let words = process.message.text.split(' ');
+async function rewardMember(command) {
+    let words = command.text.split(' ');
     if(words.length != 2) {
-        return botSay(process, 'please check your command. For example /withdraw ADDRESS'
+        return await botSay(command, 'please check your command. For example /withdraw ADDRESS'
             + ' where ADDRESS is your Waves address');
     }
     let address = words[1];
-    let ref = admin.database().ref('chats').child('' + process.message.chat.id);
-    ref.once('value').then(snapshot => {
-        let chat = snapshot.val();
-        if(!chat || !chat.amount || !chat.token) {
-            console.log('Reward was not set up');
-            return botSay(process, 'reward was not set up yet. Please contact this group owner for details');
-        }
-        if(!chat.members) {
-            chat.members = {}
-        }
-        let memberId = '' + process.message.from.id;
-        if(chat.members[memberId]) {
-            console.log('Member was rewarded already');
-            return botSay(process, 'reward ' + chat.amount + ' ' + chat.token
-                + ' was already sent to address ' + chat.members[memberId]);
-        }
-
-        let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-        Waves.API.Node.v1.addresses.balance(wallet.address).then(balanceDetails => {
-            if(balanceDetails.balance < (rewardAmount * decimals)) {
-                console.log('Low balance for reward');
-                return botSay(process, 'there is not enough money for reward. Please contact this group owner for details');
-            }
-
-            const rewardData = {
-                recipient: address,
-                assetId: chat.token,
-                amount: chat.amount * decimals,
-                feeAssetId: 'WAVES',
-                fee: fee,
-                attachment: '',
-                timestamp: Date.now()
-            };
-
-            Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair).then(response => {
-                console.log('Reward have been sent', rewardData);
-
-                ref.child('members').child(memberId).set(address);
-
-                const botFeeData = {
-                                recipient: addressForRewards,
-                                assetId: 'WAVES',
-                                amount: ((rewardAmount * decimals) - (fee * 2)),
-                                feeAssetId: 'WAVES',
-                                fee: fee,
-                                attachment: '',
-                                timestamp: Date.now()
-                };
-                let messageToUser = 'reward ' + chat.amount + ' ' + chat.token + ' was sent to address ' + address;
-                Waves.API.Node.v1.assets.transfer(botFeeData, wallet.keyPair).then(response => {
-                    console.log('Bot fee have been sent', botFeeData);
-                    return botSay(process, messageToUser);
-                }).catch(error => {
-                    console.error('Error during bot fee sending', error);
-                    return botSay(process, messageToUser);
-                });
-            }).catch(error => {
-                console.error('Error during reward sending', error);
-                return botSay(process, "error during reward sending please check your command");
-            });
-        });
-    });
-}
-
-function setupReward(process) {
-    let words = process.message.text.split(' ');
-    if(words.length != 3) {
-        console.log('Incorrect setup reward', words);
-        return botSay(process, 'please check your command. For example for rewarding each new member with 5.5 Noxbox tokens type: /reward 5.5 9PVyxDPUjauYafvq83JTXvHQ8nPnxwKA7siUFcqthCDJ');
+    let chatRef = admin.database().ref('chats').child('' + command.chat.id);
+    let chat = (await chatRef.once('value')).val();
+    if(!chat || !chat.amount || !chat.token || !chat.decimals) {
+        console.log('Reward was not set up');
+        return await botSay(command, 'reward was not set up yet. Please contact this group owner for help');
     }
-    let amount = words[1];
-    if(Number.isNaN(amount)) {
-        console.log('Incorrect amount in setup reward', words);
-        return botSay(process, 'please check your command. Seems like amount that your entered is not a number. For example correct numbers are 1500, 200.3, 0.04');
+    if(!chat.members) {
+        chat.members = {}
     }
-    let token = words[2];
-
-    let ref = admin.database().ref('chats').child('' + process.message.chat.id);
-    ref.once('value').then(snapshot => {
-        let chat = snapshot.val();
-        if(!chat) {
-            chat = { seed : Waves.Seed.create().encrypt(salt) };
-        }
-
-        chat.amount = amount;
-        chat.token = token;
-        ref.set(chat);
-        console.log('Chat settings persisted. ', JSON.stringify(chat));
-
-        let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
-        return botSay(process, 'reward was successfully set! I will be able to start rewarding process as soon as you send at least ' + amount + ' ' + token + ' and ' + rewardAmount + ' WAVES to ' + wallet.address + '. You will be able to withdraw all your funds any time you want with command /withdraw AMOUNT TOKEN_NAME ADDRESS');
-    });
-}
-
-function withdraw(process) {
-    let words = process.message.text.split(' ');
-    if(words.length != 4) {
-        console.log('Incorrect withdraw command', words);
-        return botSay(process, 'please check your command. For example for withdrawing 5.5 Noxbox tokens type: /withdraw 5.5 9PVyxDPUjauYafvq83JTXvHQ8nPnxwKA7siUFcqthCDJ ADDRESS');
+    let memberId = '' + command.from.id;
+    if(chat.members[memberId]) {
+        console.log('Member was rewarded already');
+        return await botSay(command, 'reward ' + chat.amount + ' ' + chat.name
+            + ' was already sent to address ' + chat.members[memberId]);
     }
-    let amount = words[1];
-    if(Number.isNaN(amount)) {
-        console.log('Incorrect amount in setup reward', words);
-        return botSay(process, 'please check your command. Seems like amount that your entered is not a number. For example correct numbers are 1500, 200.3, 0.04');
+
+    let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, SALT));
+
+    let balanceDetails = await Waves.API.Node.v1.addresses.balance(wallet.address);
+    if(balanceDetails.balance < (REWARD_AMOUNT * (10^DECIMALS))) {
+        console.log('Low balance for reward' + JSON.stringify(balanceDetails));
+        return await botSay(command, 'there is not enough money for reward. Please contact this group owner for help');
     }
-    let token = words[2];
-    let address = words[3];
-    admin.database().ref('chats').child('' + process.message.chat.id).once('value').then(snapshot => {
-        console.log(JSON.stringify(snapshot));
-        let chat = snapshot.val();
-        if(!chat) {
-            console.log('Attempt to withdraw without setup reward');
-            return botSay(process, 'nothing to withdraw, please set up reward first');
-        }
 
-        let wallet = Waves.Seed.fromExistingPhrase(Waves.Seed.decryptSeedPhrase(chat.seed, salt));
+    const rewardData = {
+        recipient: address,
+        assetId: chat.token,
+        amount: chat.amount * (10^chat.decimals),
+        feeAssetId: 'WAVES',
+        fee: FEE,
+        attachment: '',
+        timestamp: Date.now()
+    };
 
-        const withdrawData = {
-            recipient: address,
-            assetId: token,
-            amount: amount * decimals,
-            feeAssetId: 'WAVES',
-            fee: fee,
-            attachment: '',
-            timestamp: Date.now()
-        };
-        let messageToUser = 'withdraw ' + amount + ' ' + chat.token + ' was sent to address ' + address;
+    const botFeeData = {
+        recipient: ADDRESS_FOR_REWARDS,
+        assetId: 'WAVES',
+        amount: ((REWARD_AMOUNT * (10^DECIMALS)) - (FEE * 2)),
+        feeAssetId: 'WAVES',
+        fee: FEE,
+        attachment: '',
+        timestamp: Date.now()
+    };
 
-        Waves.API.Node.v1.assets.transfer(withdrawData, wallet.keyPair).then(response => {
-            console.log('Withdraw processed', withdrawData);
-            return botSay(process, messageToUser);
-        }).catch(error => {
-            console.log(error);
-            return botSay(process, 'Error during withdraw, please check your balance on ' + wallet.address);
-        });
-    });
+    try {
+        await Waves.API.Node.v1.assets.transfer(rewardData, wallet.keyPair);
+        console.log('Reward have been sent', rewardData);
+        chatRef.child('members').child(memberId).set(address);
+
+        await Waves.API.Node.v1.assets.transfer(botFeeData, wallet.keyPair);
+        console.log('Bot fee have been sent', botFeeData);
+        return await botSay(command, 'reward ' + chat.amount + ' ' + chat.name + ' was sent to address ' + address);
+    } catch (error) {
+        console.error('Error during reward sending', error);
+        return await botSay(command, "error during reward sending");
+    }
 }
 
 exports.setWebhook = functions.https.onRequest((request, response) => {
-    bot.setWebHook(botWebhook + '/bot' + botToken);
-    response.status(201).send('Webhook was added! ' + version);
+    bot.setWebHook(BOT_WEBHOOK + '/bot' + BOT_TOKEN);
+    response.status(201).send('Webhook was added' + VERSION);
 });
 
 
